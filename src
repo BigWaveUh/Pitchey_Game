@@ -1,0 +1,361 @@
+import pygame
+import random
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+import os
+import sys  # ✅ New
+import time
+import matplotlib.pyplot as plt
+from collections import deque
+
+# --- PATH FIX ---
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller bundle """
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+# --- CONFIG ---
+start_grid_size = 10
+max_grid_size = 20
+episodes = 1000
+level_up_every = 10
+wall_percentage = 0.2
+delay_per_move = 10
+danger_lifetime = 3
+brain_file = resource_path('models/dog_brain_9x9.keras')  
+
+CALM_MUSIC = resource_path('sounds/calm_music.mp3')       
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GREEN = (0, 255, 0)
+RED = (255, 0, 0)
+YELLOW = (255, 255, 0)
+GRAY = (150, 150, 150)
+LIGHT_GRAY = (220, 220, 220)
+BLUE = (0, 0, 255)
+
+# JFontlol
+pygame.init()
+pygame.mixer.init()
+font = pygame.font.SysFont(None, 24)
+big_font = pygame.font.SysFont(None, 60)
+
+# Setup screen
+cell_size = 40
+BRAIN_PANEL_WIDTH = 280
+WIDTH, HEIGHT = max_grid_size * cell_size + BRAIN_PANEL_WIDTH, max_grid_size * cell_size
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+pygame.display.set_caption("Pitchey! The Worlds Cutest AI Dog")
+
+# Load sounds
+ouch_sound = pygame.mixer.Sound(resource_path('sounds/ouch.wav'))    
+win_sound = pygame.mixer.Sound(resource_path('sounds/win.wav'))      
+
+pygame.mixer.music.load(CALM_MUSIC)
+pygame.mixer.music.play(-1)
+pygame.mixer.music.set_volume(0.5)
+
+# Actions
+actions = ['up', 'down', 'left', 'right']
+
+# Tracking
+moves_per_episode = []
+danger_zones = {}
+manual_control = False
+developer_mode = False
+ouch_popup = None
+
+# hf
+
+def path_exists(walls, grid_size, start, goal):
+    visited = set()
+    queue = deque([start])
+
+    while queue:
+        x, y = queue.popleft()
+        if (x, y) == goal:
+            return True
+        for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < grid_size and 0 <= ny < grid_size:
+                if (nx, ny) not in walls and (nx, ny) not in visited:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
+    return False
+
+def create_environment(grid_size):
+    while True:
+        walls = []
+        for row in range(grid_size):
+            for col in range(grid_size):
+                if random.random() < wall_percentage and (row, col) not in [(0,0), (grid_size-1, grid_size-1)]:
+                    walls.append((row, col))
+        if path_exists(set(walls), grid_size, (0,0), (grid_size-1, grid_size-1)):
+            return walls
+
+def draw_grid(grid_size):
+    for x in range(0, grid_size * cell_size, cell_size):
+        for y in range(0, grid_size * cell_size, cell_size):
+            rect = pygame.Rect(x, y, cell_size, cell_size)
+            pygame.draw.rect(screen, WHITE, rect, 1)
+
+def draw_agent(agent_pos, happy=True):
+    rect = pygame.Rect(agent_pos[1]*cell_size, agent_pos[0]*cell_size, cell_size, cell_size)
+    pygame.draw.rect(screen, BLUE, rect)
+    face = ":)" if happy else ":("
+    color = YELLOW if happy else RED
+    text = font.render(face, True, color)
+    text_rect = text.get_rect(center=(agent_pos[1]*cell_size + cell_size//2, agent_pos[0]*cell_size + cell_size//2))
+    screen.blit(text, text_rect)
+    if ouch_popup and time.time() - ouch_popup < 1:
+        ouch_text = font.render("Ouch!", True, RED)
+        screen.blit(ouch_text, (agent_pos[1]*cell_size + 10, agent_pos[0]*cell_size - 10))
+
+def draw_goal(goal_pos):
+    rect = pygame.Rect(goal_pos[1]*cell_size, goal_pos[0]*cell_size, cell_size, cell_size)
+    pygame.draw.rect(screen, GREEN, rect)
+
+def draw_walls(walls):
+    for wall in walls:
+        rect = pygame.Rect(wall[1]*cell_size, wall[0]*cell_size, cell_size, cell_size)
+        pygame.draw.rect(screen, GRAY, rect)
+
+def draw_danger_zones():
+    now = time.time()
+    expired = []
+    for pos, timestamp in danger_zones.items():
+        if now - timestamp < danger_lifetime:
+            rect = pygame.Rect(pos[1]*cell_size, pos[0]*cell_size, cell_size, cell_size)
+            pygame.draw.rect(screen, RED, rect)
+        else:
+            expired.append(pos)
+    for pos in expired:
+        del danger_zones[pos]
+
+def move_agent(action, agent_pos, walls, grid_size):
+    new_pos = agent_pos.copy()
+    if action == 'up':
+        new_pos[0] -= 1
+    elif action == 'down':
+        new_pos[0] += 1
+    elif action == 'left':
+        new_pos[1] -= 1
+    elif action == 'right':
+        new_pos[1] += 1
+    if 0 <= new_pos[0] < grid_size and 0 <= new_pos[1] < grid_size and tuple(new_pos) not in walls:
+        return new_pos
+    return agent_pos
+
+def update_danger_zone():
+    mouse_x, mouse_y = pygame.mouse.get_pos()
+    if mouse_x < start_grid_size * cell_size:
+        grid_x = mouse_y // cell_size
+        grid_y = mouse_x // cell_size
+        pos = (grid_x, grid_y)
+        now = time.time()
+        if pos not in danger_zones:
+            danger_zones[pos] = now
+
+def get_mini_image(agent_pos, grid_size, walls, goal_pos):
+    size = 9
+    half = size // 2
+    mini_image = np.zeros((size, size))
+    for dx in range(-half, half+1):
+        for dy in range(-half, half+1):
+            x = agent_pos[0] + dx
+            y = agent_pos[1] + dy
+            if 0 <= x < grid_size and 0 <= y < grid_size:
+                if (x, y) in walls:
+                    mini_image[dx+half][dy+half] = 1
+                elif (x, y) in danger_zones:
+                    mini_image[dx+half][dy+half] = 2
+                elif (x, y) == tuple(goal_pos):
+                    mini_image[dx+half][dy+half] = 3
+                elif (x, y) == tuple(agent_pos):
+                    mini_image[dx+half][dy+half] = 4
+            else:
+                mini_image[dx+half][dy+half] = 0
+    return mini_image.flatten()
+
+def draw_brain_panel(q_values, epsilon, total_moves, total_reward):
+    panel_x = start_grid_size * cell_size
+    pygame.draw.rect(screen, LIGHT_GRAY, (panel_x, 0, BRAIN_PANEL_WIDTH, HEIGHT))
+    labels = ['UP', 'DOWN', 'LEFT', 'RIGHT']
+    for idx, value in enumerate(q_values[0]):
+        height = max(10, min(150, (value + 1) * 50))
+        color = GREEN if value >= 0 else RED
+        bar_x = panel_x + 50
+        bar_y = 50 + idx * 100
+        pygame.draw.rect(screen, color, (bar_x, bar_y + (100-height)//2, 30, height))
+        label = font.render(labels[idx], True, BLACK)
+        screen.blit(label, (bar_x - 40, bar_y + 40))
+    info = [
+        "Pitchey!",
+        "The Worlds Cutest AI Dog",
+        "Help Him Escape!",
+        "Model: DQN 9x9",
+        f"Epsilon: {epsilon:.2f}",
+        f"Moves: {total_moves}",
+        f"Reward: {total_reward:.1f}"
+    ]
+    for i, line in enumerate(info):
+        text = font.render(line, True, BLACK)
+        screen.blit(text, (panel_x + 10, 500 + i*25))
+
+# --- Model Build ---
+
+def build_model(input_size, output_size):
+    model = keras.Sequential([
+        keras.layers.Input(shape=(input_size,)),
+        *[keras.layers.Dense(256, activation='relu') for _ in range(8)],
+        keras.layers.Dense(output_size)
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+if os.path.exists(brain_file):
+    model = keras.models.load_model(brain_file)
+else:
+    model = build_model(81, len(actions))
+
+# loop
+
+grid_size = start_grid_size
+agent_pos = [0, 0]
+goal_pos = [grid_size-1, grid_size-1]
+walls = create_environment(grid_size)
+wins = 0
+epsilon = 1.0
+epsilon_decay = 0.995
+min_epsilon = 0.05
+gamma = 0.9
+
+for episode in range(episodes):
+    grid_size = start_grid_size + (wins // level_up_every) * 2
+    grid_size = min(grid_size, max_grid_size)
+    agent_pos = [0, 0]
+    goal_pos = [grid_size-1, grid_size-1]
+    walls = create_environment(grid_size)
+    visited = set()
+    done = False
+    total_moves = 0
+    total_reward = 0
+    touched_danger = False
+
+    while not done:
+        screen.fill(BLACK)
+        draw_grid(grid_size)
+        draw_goal(goal_pos)
+        draw_walls(walls)
+        draw_danger_zones()
+        update_danger_zone()
+
+        state = get_mini_image(agent_pos, grid_size, walls, goal_pos)
+
+        if manual_control:
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_w]: action = 'up'
+            elif keys[pygame.K_s]: action = 'down'
+            elif keys[pygame.K_a]: action = 'left'
+            elif keys[pygame.K_d]: action = 'right'
+            else: action = random.choice(actions)
+            action_index = actions.index(action)
+        else:
+            if random.uniform(0, 1) < epsilon:
+                action_index = random.randint(0, len(actions)-1)
+            else:
+                q_values = model.predict(state.reshape(1, -1), verbose=0)
+                action_index = np.argmax(q_values)
+        action = actions[action_index]
+
+        old_pos = agent_pos.copy()
+        agent_pos = move_agent(action, agent_pos, walls, grid_size)
+
+        distance_old = np.linalg.norm(np.array(old_pos) - np.array(goal_pos))
+        distance_new = np.linalg.norm(np.array(agent_pos) - np.array(goal_pos))
+
+        reward = 0
+        sad = False
+        if agent_pos == goal_pos:
+            reward += 100
+            done = True
+            if total_moves <= 30:
+                reward += 20
+            if not touched_danger:
+                reward += 50
+            win_sound.play()
+        elif tuple(agent_pos) in danger_zones:
+            reward -= 50
+            touched_danger = True
+            sad = True
+            ouch_sound.play()
+            ouch_popup = time.time()
+        elif agent_pos == old_pos:
+            reward -= 5
+        else:
+            reward += 1 if distance_new < distance_old else -1
+
+        if tuple(agent_pos) not in visited:
+            reward += 2
+            visited.add(tuple(agent_pos))
+
+        total_reward += reward
+        total_moves += 1
+
+        old_state = get_mini_image(old_pos, grid_size, walls, goal_pos)
+        new_state = get_mini_image(agent_pos, grid_size, walls, goal_pos)
+        target = reward
+        if not done:
+            next_q = model.predict(new_state.reshape(1, -1), verbose=0)
+            target += gamma * np.max(next_q)
+        q_update = model.predict(old_state.reshape(1, -1), verbose=0)
+        q_update[0][action_index] = target
+        model.fit(old_state.reshape(1, -1), q_update, epochs=1, verbose=0)
+
+        draw_agent(agent_pos, happy=not sad)
+        draw_brain_panel(model.predict(state.reshape(1, -1), verbose=0), epsilon, total_moves, total_reward)
+
+        pygame.display.flip()
+        pygame.time.delay(delay_per_move)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                model.save(brain_file)
+                pygame.quit()
+                exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_m:
+                    manual_control = not manual_control
+                if event.key == pygame.K_d:
+                    developer_mode = not developer_mode
+                if event.key == pygame.K_s:
+                    model.save(brain_file)
+
+    moves_per_episode.append(total_moves)
+    if epsilon > min_epsilon:
+        epsilon *= epsilon_decay
+
+print("\n💾 Saving final brain...")
+model.save(brain_file)
+pygame.quit()
+
+# plot
+def smooth(y, box_pts):
+    box = np.ones(box_pts)/box_pts
+    y_smooth = np.convolve(y, box, mode='same')
+    return y_smooth
+
+smoothed_moves = smooth(moves_per_episode, 10)
+plt.plot(smoothed_moves, label="Smoothed Moves to Escape")
+plt.title("Pitchey Learning Curve (9x9 Vision + Positive Reinforcement)")
+plt.xlabel("Episode")
+plt.ylabel("Moves")
+plt.legend()
+plt.grid(True)
+plt.show()
