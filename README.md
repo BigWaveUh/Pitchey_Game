@@ -1,7 +1,11 @@
 MEET PITCHEY! HE'S THE WORLDS CUTEST AI DOGGO!
 
+![image alt](https://github.com/BigWaveUh/Pitchey_Game/blob/main/PitcheyFace.png?raw=true)
+
 Original Owner: Preston M
+
 Music: HeatleyBros
+
 New Owner: YOU!
 
 WHAT IS PITCHEY EVEN?
@@ -18,6 +22,8 @@ Step 1: Navigate to releases and download the latest version of Pitchey_Game.zip
 Option 1: Run App (MacOS)
 - Navigate to the `/dist/` folder.\=
 - Double-click `EscapeGame_NeuralNet_7x7Vision_DynamicMusic.app`.
+
+![image alt](https://github.com/BigWaveUh/Pitchey_Game/blob/main/PitcheyEscape.png?raw=true)
 
 Option 2: Run from Python Source
 
