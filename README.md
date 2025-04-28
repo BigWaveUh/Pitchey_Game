@@ -8,6 +8,8 @@ WHAT IS PITCHEY EVEN?
 
 Pitchey is an adorable little AI dog that learns how to escape mazes using Deep Q-Learning! The game features positive and negative reinforcement, real-time environment interaction, and adaptive behavior! I created him because I felt as if many people have not interacted with AI in a more "raw" state. We typically have polished packages like Gemini and ChatGPT. Hopefully you'll find Pitchey fascinating and adorable! And just maybe, I could have sparked your interest in machine learning! Have fun with Pitchey! He's yours to take care of now!
 
+![image alt](https://github.com/BigWaveUh/Pitchey_Game/blob/main/PitcheyRun.png.png?raw=true)
+
 HOW TO RUN PITCHEY!
 
 Step 1: Navigate to releases and download the latest version of Pitchey_Game.zip
